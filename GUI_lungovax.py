@@ -268,6 +268,13 @@ class AssistedRespirationInputsFrame(ctk.CTkFrame):
                                                  text=LANG_PACK['SECOND_SIM_TEXT'],
                                                  command=self.toggle_second_sim)
         self.secondSimCheckBox.grid(row=0, column=2, padx=5, pady=5, sticky='ew')
+        
+        # Mucus toggle (Option 2: single view switches between baseline vs mucus)
+        self.includeMucusVar = ctk.BooleanVar(value=False)
+        self.mucusCheckBox = ctk.CTkCheckBox(self.topFrame,
+                                     text="Include mucus",
+                                     variable=self.includeMucusVar)
+        self.mucusCheckBox.grid(row=0, column=3, padx=5, pady=5, sticky='ew')
 
         # Simulation Parameters Controller
         self.params_controller = SimulationParametersControllerTabview(self)
@@ -318,13 +325,14 @@ class AssistedRespirationInputsFrame(ctk.CTkFrame):
             end_time = None
             pause_lapsus = None
             # Adjusting amplitude
-            if self.clamp_mode.get() == LANG_PACK['PRESSURE_MODE_SIM_TEXT']:
+            mode_txt = str(self.clamp_mode.get()).strip().lower().replace("_", " ")
+            if "pressure" in mode_txt:
                 multiplier = 1/10
-            elif self.clamp_mode.get() == LANG_PACK['VOLUME_MODE_SIM_TEXT']:
+            elif "volume" in mode_txt:
                 multiplier = 4
             else:
-                raise ValueError(f'Invalid clamping mode: {self.clamp_mode.get()}')
-
+                # default to volume-style scaling if unclear
+                 multiplier = 4
             if choice == LANG_PACK["IDEAL_PULSE_TEXT"]:
                 start, end, amplitude = values
                 amplitude *= multiplier
@@ -357,32 +365,35 @@ class AssistedRespirationInputsFrame(ctk.CTkFrame):
         return func_list, end_times, pauses
 
     def run_sim(self):
+        include_mucus = bool(self.includeMucusVar.get())
         time_vector = np.linspace(0, SIM_TIME, 1500)
         capacitances, resistances = self.get_params()
-        resistances = np.array(resistances)/1000.  # Converting between cmH20/(Ls) to cmH20/(mLs)
+        resistances = np.array(resistances)/1000.0  # Converting between cmH20/(Ls) to cmH20/(mLs)
         clamping_functions, end_times, pauses = self.get_clamping_funcs()
-        if self.clamp_mode.get() == LANG_PACK['PRESSURE_MODE_SIM_TEXT']:
-            sim_func = lung.pressure_clamp_sim
-        elif self.clamp_mode.get() == LANG_PACK['VOLUME_MODE_SIM_TEXT']:
+        mode_txt = str(self.clamp_mode.get()).strip().lower().replace("_", " ")
+        if "pressure" in mode_txt:
+             sim_func = lung.pressure_clamp_sim
+        elif "volume" in mode_txt:
             sim_func = lung.vol_clamp_sim
         else:
-            raise ValueError(f'Invalid clamping mode: {self.clamp_mode.get()}')
-
+            # fallback to volume clamp
+             sim_func = lung.vol_clamp_sim
         if len(capacitances) == 1:
             volume, flux, pressure = sim_func(time_vector,
                                               capacitances[0],
                                               resistances[0],
                                               clamping_functions[0],
                                               end_time=end_times[0],
-                                              pause_lapsus=pauses[0])
+                                              pause_lapsus=pauses[0], 
+                                              include_mucus=include_mucus)
             flux = flux * 60.0 / 1000.0  # Converting from mL/s to L/min
             fig = lung.plot_vfp(time_vector, volume, flux, pressure, False, LANG_PACK)
         else:
             volume1, flux1, pressure1 = sim_func(time_vector, capacitances[0], resistances[0], clamping_functions[0],
-                                                 end_time=end_times[0], pause_lapsus=pauses[0])
+                                                 end_time=end_times[0], pause_lapsus=pauses[0],include_mucus=include_mucus)
             flux1 = flux1 * 60.0 / 1000.0  # Converting from mL/s to L/min
             volume2, flux2, pressure2 = sim_func(time_vector, capacitances[1], resistances[1], clamping_functions[1],
-                                                 end_time=end_times[1], pause_lapsus=pauses[1])
+                                                 end_time=end_times[1], pause_lapsus=pauses[1],include_mucus=include_mucus)
             flux2 = flux2 * 60.0 / 1000.0  # Converting from mL/s to L/min
             fig = lung.comparative_plot(time_vector, volume1, volume2, flux1, flux2, pressure1, pressure2, False)
         self.master.update_graph(fig)

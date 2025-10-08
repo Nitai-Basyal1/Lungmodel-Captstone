@@ -1,7 +1,14 @@
-from typing import Tuple
+from typing import Tuple, Callable
 from ODE_solver import *
 from typing import Callable
 from language_package_manager import LANG_PACK
+# NEW:
+import numpy as np
+try:
+    from modules.mucus import MucusDynamics
+except Exception:
+    MucusDynamics = None
+
 
 UNITS = {'Volume': '$[ml]$',
          'Pressure': '$[cmH_2O]$',
@@ -10,7 +17,7 @@ UNITS = {'Volume': '$[ml]$',
 
 
 def vol_clamp_sim(time_vector: np.ndarray, capacitance: float, resistance: float, flux: Callable, peep=0.0, *,
-                  pause_lapsus=None, end_time=None, **kwargs) -> Tuple[np.ndarray, ...]:
+                  pause_lapsus=None, end_time=None, include_mucus: bool = False,mucus_kwargs: dict | None = None, **kwargs) -> Tuple[np.ndarray, ...]:
     """
     Time: array containing the time samples
     capacitance: lung compliance
@@ -24,35 +31,73 @@ def vol_clamp_sim(time_vector: np.ndarray, capacitance: float, resistance: float
     """
 
     if end_time is None:
-        end_time = time_vector[int(0.6*len(time_vector))]
+        end_time = np.max(time_vector) * 0.33
 
     if pause_lapsus is None:
         pause_lapsus = np.max(time_vector) * 0.1
+       
+    N = len(time_vector)
+    dt = time_vector[1] - time_vector[0]
+    
+    #Prepare arrays 
+    volume = np.zeros(N, dtype=float)
+    flux_arr = np.zeros(N, dtype=float)
+    pressure = np.zeros(N, dtype=float)
 
-    # first, simulate inhalation
-    flux = np.vectorize(flux)
-    flux = flux(time_vector)
-    flux[time_vector > end_time] = 0.0
+    # first, simulat, Vectorize inhalation flux and zero it after end_time
+    flux_vec = np.vectorize(flux)(time_vector)
+    flux_vec[time_vector > end_time] = 0.0
+
+    #Mucus Model 
+    if include_mucus and MucusDynamics is not None:
+        mm = MucusDynamics(**(mucus_kwargs or {}))
 
     # integrate flux to find volume and compute pressure
-    dt = time_vector[1] - time_vector[0]
-    volume = np.cumsum(flux)*dt
-    pressure = resistance * flux + volume / capacitance + peep
+    #Inhalation + pause (explicit)
+    for i in range(1, N):
+        t = time_vector[i]
 
-    # after the pause lapsus, simulate exhalation
-    ex_time = end_time + pause_lapsus
-    pressure[time_vector > ex_time] = peep
-    index = np.abs(time_vector - ex_time).argmin()
-    v_0 = volume[index]
-    volume[time_vector > ex_time] = single_ruku4(time_vector[time_vector > ex_time],
-                                                 lambda _, v: -(v / capacitance) * 1 / resistance, v_0)
-    flux[time_vector > ex_time] = np.gradient(volume[time_vector > ex_time], dt)
+        #imposed flux during inhalation, zero in pause/exhalation window 
+        Qin = flux_vec[i]
+        volume[i] = volume[i-1] + Qin * dt
+
+        #update mucus on actual flow 
+        if mm:
+            mm.update(Qin, dt)
+            R_eff = resistance = mm.resistance()
+        else:
+            R_eff = resistance 
+         
+        pressure[i] = R_eff * Qin + (volume [i] / capacitance) + peep 
+        flux_arr[i] = Qin
+
+        #after the pause, switch to exhalatipn dynamics below 
+        if t > (end_time + pause_lapsus):
+            break
+
+        #passive exhalation (Ohmic) : Q = -(V/C)/R_eff
+        start_idx = np.searchsorted(time_vector, end_time + pause_lapsus)
+        for i in range(max(start_idx,1),N):
+            if mm:
+                R_eff = resistance + mm.resistance()
+            else:
+                R_eff = resistance 
+
+        Q = -(volume[i-1] / capacitance) / R_eff
+        volume[i] = volume[i-1] + Q * dt
+
+        if mm:
+            mm.update(Q, dt)
+
+        pressure[i] = R_eff * Q + (volume[i] / capacitance) + peep
+        flux_arr[i] = Q
+            
    
-    return volume, flux, pressure
+    return volume, flux_arr, pressure
 
 
 def pressure_clamp_sim(time_array: np.ndarray, compliance: float, resistance: float, pressure_function: Callable,
-                       peep=0.0, **kwargs) -> Tuple[np.ndarray, ...]:
+                       peep=0.0, include_mucus: bool = False, mucus_kwargs: dict | None = None, **kwargs) -> Tuple[np.ndarray, ...]:
     """
     T: array containing the time samples
     C: lung compliance
@@ -61,18 +106,31 @@ def pressure_clamp_sim(time_array: np.ndarray, compliance: float, resistance: fl
     PEEP: positive end-expiratory pressure
     returns: volume, flux, and pressure for every instant of time
     """
-    pressure_function = np.vectorize(pressure_function)
-    pressure = pressure_function(time_array)
+    P = np.vectorize(pressure_function)(time_array)
+    N = len(time_array)
+    dt = time_array[1] - time_array[0]
 
-    def p_func(t):
-        return pressure[np.abs(time_array - t).argmin()]
+    volume = np.zeros(N, dtype=float)
+    flux = np.zeros(N, dtype=float)
 
-    def flux(t, v):
-        return (p_func(t) - v / compliance - peep) * 1 / resistance
+    mm = None
+    if include_mucus and MucusDynamics is not None:
+        mm = MucusDynamics(**(mucus_kwargs or {}))
 
-    volume = single_ruku4(time_array, flux, 0)
-    flux = np.gradient(volume, time_array)
-    return volume, flux, pressure
+    for i in range(1, N):
+        if mm:
+            R_eff = resistance + mm.resistance()
+        else:
+            R_eff = resistance
+
+        # Ohm-like law with compliance term
+        flux[i] = (P[i] - (volume[i-1] / compliance) - peep) / R_eff
+        volume[i] = volume[i-1] + flux[i] * dt
+
+        if mm:
+            mm.update(flux[i], dt)
+
+    return volume, flux, P
 
 
 def plot_vfp(time_array: np.ndarray, volume: np.ndarray, flux: np.ndarray, pressure: np.ndarray,
