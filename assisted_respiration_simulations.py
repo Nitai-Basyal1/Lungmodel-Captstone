@@ -62,9 +62,10 @@ def vol_clamp_sim(time_vector: np.ndarray, capacitance: float, resistance: float
         volume[i] = volume[i-1] + Qin * dt
 
         #update mucus on actual flow 
+        mm = None
         if mm:
             mm.update(Qin, dt)
-            R_eff = resistance = mm.resistance()
+            R_eff = resistance + mm.resistance()
         else:
             R_eff = resistance 
          
@@ -147,12 +148,24 @@ def plot_vfp(time_array: np.ndarray, volume: np.ndarray, flux: np.ndarray, press
          ["bottom left", "right column"]]
     )
 
+    # Volume vs time 
     axs["top left"].plot(time_array, volume, color='blue')
     axs["top left"].set_ylabel(f"${lang_pack['VOLUME_LABEL']}$ {UNITS['Volume']}")
-
+    
+    #FLow vs time 
     axs["middle left"].plot(time_array, flux, color='green')
     axs["middle left"].set_ylabel(f"${lang_pack['FLUX_LABEL']}$ {UNITS['Flux']}")
 
+    # negative flow  exhalation 
+    ymin = float(np.nanmin(flux))
+    ymax = float(np.nanmax(flux))
+    if ymin == ymax:
+        ymin -= 1.0
+        ymax += 1.0
+    pad = 0.05 * (ymax - ymin)
+    axs["middle left"].set_ylim(ymin - pad, ymax + pad)
+
+    # Pressure vs time 
     axs["bottom left"].plot(time_array, pressure, color='deeppink')
     axs["bottom left"].set_ylabel(f"${lang_pack['PRESSURE_LABEL']}$ {UNITS['Pressure']}")
     axs["bottom left"].set_xlabel(f"${lang_pack['TIME_LABEL']}$ {UNITS['Time']}")
@@ -161,6 +174,14 @@ def plot_vfp(time_array: np.ndarray, volume: np.ndarray, flux: np.ndarray, press
     axs["right column"].set_xlabel(f"${lang_pack['VOLUME_LABEL']}$ {UNITS['Volume']}")
     axs["right column"].set_ylabel(f"${lang_pack['FLUX_LABEL']}$ {UNITS['Flux']}")
     axs["right column"].axhline(y=0, color='y', linestyle='-')
+    
+    ymin = float(np.nanmin(flux))
+    ymax = float(np.nanmax(flux))
+    if ymin == ymax:
+        ymin -= 1.0
+        ymax += 1.0
+    pad = 0.05 * (ymax - ymin)
+    axs["right column"].set_ylim(ymin - pad, ymax + pad)
 
     # Tight layout
     plt.tight_layout()
